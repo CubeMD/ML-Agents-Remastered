@@ -1,0 +1,13 @@
+/results
+
+*.idea/
+*.vscode/
+
+*/.ipynb_checkpoints
+*.pyc
+*.iml
+*.cache
+*/dist/
+*.egg-info*
+*.eggs*
+*.gitignore.swp
