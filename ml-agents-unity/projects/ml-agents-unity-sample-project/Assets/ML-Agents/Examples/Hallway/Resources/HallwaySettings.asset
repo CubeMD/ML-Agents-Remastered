@@ -14,6 +14,6 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   agentRunSpeed: 1.25
   agentRotationSpeed: 400
-  agentSensorRadius: 15
+  agentSensorRadius: 37.25
   goalScoredMaterial: {fileID: 2100000, guid: c67450f290f3e4897bc40276a619e78d, type: 2}
   failMaterial: {fileID: 2100000, guid: 88b9ae7af2c1748a0a1f63407587a601, type: 2}

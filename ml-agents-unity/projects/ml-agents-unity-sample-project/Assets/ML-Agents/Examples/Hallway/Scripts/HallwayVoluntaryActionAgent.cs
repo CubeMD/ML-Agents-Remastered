@@ -1,6 +1,8 @@
 using System;
 using System.Collections;
-using System.ComponentModel.Design;
+using System.Collections.Generic;
+using AgentDebugTool.Scripts.Agent;
+using Tools;
 using Unity.MLAgents;
 using Unity.MLAgents.Actuators;
 using Unity.MLAgents.Sensors;
@@ -9,18 +11,13 @@ using Random = UnityEngine.Random;
 
 namespace ML_Agents.Examples.Hallway.Scripts
 {
-    public class HallwayVoluntaryActionAgent : Agent
+    public class HallwayVoluntaryActionAgent : DebuggableAgent
     {
         public class HallwayAgentAction
         {
             public int discreteAction;
             public float delay;
 
-            public HallwayAgentAction()
-            {
-                
-            }
-            
             public HallwayAgentAction(int discreteAction, float delay)
             {
                 this.discreteAction = discreteAction;
@@ -28,6 +25,32 @@ namespace ML_Agents.Examples.Hallway.Scripts
             }
         }
         
+        public class HallwayAgentObservation
+        {
+            public float[] vectorObservations;
+            public List<float[]> objectObservations;
+            
+            public HallwayAgentObservation(float[] vectorObservations, List<float[]> objectObservations)
+            {
+                this.vectorObservations = vectorObservations;
+                this.objectObservations = objectObservations;
+            }
+        }
+
+        public class AgentStep
+        {
+            public HallwayAgentAction hallwayAgentAction;
+            public HallwayAgentObservation hallwayAgentObservation;
+            public float reward;
+
+            public AgentStep(HallwayAgentObservation hallwayAgentObservation, HallwayAgentAction hallwayAgentAction, float reward)
+            {
+                this.hallwayAgentObservation = hallwayAgentObservation;
+                this.hallwayAgentAction = hallwayAgentAction;
+                this.reward = reward;
+            }
+        }
+
         [SerializeField] private AreaManager areaManager;
 
         [SerializeField] private Rigidbody agentRigidbody;
@@ -37,13 +60,27 @@ namespace ML_Agents.Examples.Hallway.Scripts
 
         [SerializeField] private HallwaySettings hallwaySettings;
         [SerializeField] private bool isHuman;
+        [SerializeField] private bool drawBufferSensorMonitor;
         [SerializeField] private Vector3 minMeanMaxActionDelay;
         [SerializeField] private float maxEpisodeLengthInSeconds;
         
         private bool rightAnswerIsX;
         private float timeSinceLastDecision;
         private float timeSinceBeginningOfEpisode;
-        private HallwayAgentAction CompletedAgentAction;
+        private HallwayAgentAction decidedAgentAction = new HallwayAgentAction(0, 0);
+        private readonly List<AgentStep> episodeTrajectory = new List<AgentStep>();
+
+
+        public override void Initialize()
+        {
+            Academy.Instance.AutomaticSteppingEnabled = false;
+            
+        }
+
+        public void Start()
+        {
+            Academy.Instance.EnvironmentStep();
+        }
 
         public override void OnEpisodeBegin()
         {
@@ -53,65 +90,67 @@ namespace ML_Agents.Examples.Hallway.Scripts
             agentRigidbody.velocity = Vector3.zero;
             timeSinceLastDecision = 0;
             timeSinceBeginningOfEpisode = 0;
-            CompletedAgentAction = new HallwayAgentAction();
-        }
-
-        public override void Initialize()
-        {
-            Academy.Instance.AgentPreStep += MakeRequests;
+            decidedAgentAction = new HallwayAgentAction(0, 0);
+            
+            if (isHuman)
+            {
+                episodeTrajectory.Clear();
+            }
+            // else
+            // {
+            //     RequestDecision();
+            //     Academy.Instance.EnvironmentStep();
+            // }
         }
         
-        protected void OnDestroy()
-        {
-            if (Academy.IsInitialized)
-            {
-                Academy.Instance.AgentPreStep -= MakeRequests;
-            }
-        }
-    
-        private void MakeRequests(int academyStepCount)
+        public void FixedUpdate()
         {
             timeSinceBeginningOfEpisode += Time.fixedDeltaTime;
+            timeSinceLastDecision += Time.fixedDeltaTime;
             
             if (timeSinceBeginningOfEpisode >= maxEpisodeLengthInSeconds)
             {
                 AddReward(-1f);
-                EndEpisode();
-            }
-            
-            if (isHuman && CompletedAgentAction != null)
-            {
-                RequestDecision();
-            }
-            else if (!isHuman)
-            {
-                timeSinceLastDecision += Time.fixedDeltaTime;
-
-                if (CompletedAgentAction == null)
+                if (isHuman)
                 {
-                    CompletedAgentAction = new HallwayAgentAction();
-                    timeSinceLastDecision = 0;
-                    RequestDecision();
-                }
-                else if (timeSinceLastDecision >= CompletedAgentAction.delay)
-                {
-                    timeSinceLastDecision = 0;
-                    RequestDecision();
+                    DumpTrajectoryIntoHeuristicAndEndEpisode();
                 }
                 else
                 {
-                    InteractWithEnvironment(CompletedAgentAction);
+                    EndEpisode();
+                }
+                
+            }
+            else if (isHuman)
+            {
+                if (timeSinceLastDecision >= minMeanMaxActionDelay.z || decidedAgentAction.delay != 0)
+                {
+                    AddReward(-0.1f);
+                    decidedAgentAction.delay = timeSinceLastDecision;
+                    episodeTrajectory.Add(new AgentStep(GetAgentEnvironmentObservation(), decidedAgentAction, Reward));
+                    timeSinceLastDecision = 0;
+                    decidedAgentAction = new HallwayAgentAction(decidedAgentAction.discreteAction, 0);
                 }
             }
+            else if (!isHuman)
+            {
+                if (timeSinceLastDecision >= decidedAgentAction.delay)
+                {
+                    timeSinceLastDecision = 0;
+                    AddReward(-0.1f);
+                    RequestDecision();
+                    Academy.Instance.EnvironmentStep();
+                }
+            }
+            
+            InteractWithEnvironment(decidedAgentAction);
         }
 
         public void Update()
         {
-            if (isHuman && CompletedAgentAction == null)
+            if (isHuman)
             {
-                timeSinceLastDecision += Time.deltaTime;
-                
-                int humanAgentAction;
+                int humanAgentAction = 0;
             
                 if (Input.GetKey(KeyCode.W))
                 {
@@ -125,46 +164,97 @@ namespace ML_Agents.Examples.Hallway.Scripts
                 {
                     humanAgentAction = 3;
                 }
-                else
-                {
-                    return;
-                }
 
-                CompletedAgentAction = new HallwayAgentAction(humanAgentAction, timeSinceLastDecision);
+                if (decidedAgentAction.discreteAction != humanAgentAction)
+                {
+                    decidedAgentAction = new HallwayAgentAction(humanAgentAction, timeSinceLastDecision);
+                }
             }
         }
-
-        public override void CollectObservations(VectorSensor sensor)
+        
+        public HallwayAgentObservation GetAgentEnvironmentObservation()
         {
-            sensor.AddObservation(timeSinceBeginningOfEpisode / maxEpisodeLengthInSeconds);
-            sensor.AddObservation(agentRigidbody.velocity.x / hallwaySettings.agentRunSpeed / 15);
-            sensor.AddObservation(agentRigidbody.velocity.z / hallwaySettings.agentRunSpeed / 15);
-            sensor.AddObservation(agentRigidbody.angularVelocity.y);
-            sensor.AddObservation(transform.localPosition.x / 10);
-            sensor.AddObservation(transform.localPosition.z / 25);
-            sensor.AddObservation(transform.rotation.eulerAngles.y / 180 - 1);
-
-            Collider[] sensedObjects = Physics.OverlapSphere(transform.position, hallwaySettings.agentSensorRadius);
+            Monitor.RemoveAllValuesFromAllTransforms();
             
-            if (sensedObjects.Length > 0)
+            float[] vectorObservations =
             {
-                foreach (Collider sensedCollider in sensedObjects)     
+                timeSinceBeginningOfEpisode / maxEpisodeLengthInSeconds,
+                agentRigidbody.velocity.x / hallwaySettings.agentRunSpeed / 15,
+                agentRigidbody.velocity.z / hallwaySettings.agentRunSpeed / 15,
+                agentRigidbody.angularVelocity.y,
+                transform.localPosition.x / 10,
+                transform.localPosition.z / 25,
+                transform.rotation.eulerAngles.y / 180 - 1
+            };
+
+            observationsDebugSet.Add("Time: ", $"{vectorObservations[0]}");
+            observationsDebugSet.Add("Vel X: ", $"{vectorObservations[1]}");
+            observationsDebugSet.Add("Vel z: ", $"{vectorObservations[2]}");
+            observationsDebugSet.Add("Ang Vel: ", $"{vectorObservations[3]}");
+            observationsDebugSet.Add("Pos X: ", $"{vectorObservations[4]}");
+            observationsDebugSet.Add("Pos Z: ", $"{vectorObservations[5]}");
+            observationsDebugSet.Add("Rot: ", $"{vectorObservations[6]}");
+            
+            List<float[]> objectObservations = new List<float[]>();
+
+            foreach (Collider sensedCollider in Physics.OverlapSphere(transform.position, hallwaySettings.agentSensorRadius))     
+            {
+                if (sensedCollider.transform.parent.TryGetComponent(out Symbol symbol))
                 {
-                    if (sensedCollider.transform.parent.TryGetComponent(out Symbol symbol))
+                    Vector3 relativeNormalizedObjectPosition = transform.InverseTransformPoint(symbol.transform.position) / hallwaySettings.agentSensorRadius;
+                    
+                    float[] observation =
                     {
-                        // symbol.SetSensedMaterialRoutine(SwapMaterialForRenderer(symbol.ren, 0.5f, hallwaySettings.failMaterial));;
-                        Vector3 relativeNormalizedObjectPosition = transform.InverseTransformPoint(symbol.transform.position) / hallwaySettings.agentSensorRadius;
-                        float[] observation = { 1, symbol.IsSymbolX ? 1 : -1, relativeNormalizedObjectPosition.x, relativeNormalizedObjectPosition.z};
-                        questionSensor.AppendObservation(observation);
-                    }   
-                    else if (sensedCollider.transform.parent.TryGetComponent(out PressurePad pressurePad))
+                        1, 
+                        symbol.IsSymbolX ? 1 : -1, 
+                        relativeNormalizedObjectPosition.x,
+                        relativeNormalizedObjectPosition.z
+                    };
+                    
+                    objectObservations.Add(observation);
+                    
+                    if (drawBufferSensorMonitor)
                     {
-                        // StartCoroutine(SwapMaterialForRenderer(pressurePad.ren, 0.5f, hallwaySettings.failMaterial));
-                        Vector3 relativeNormalizedObjectPosition = transform.InverseTransformPoint(pressurePad.transform.position) / hallwaySettings.agentSensorRadius;
-                        float[] observation = { 0, pressurePad.AssociatedSymbol.IsSymbolX ? 1 : -1, relativeNormalizedObjectPosition.x, relativeNormalizedObjectPosition.z};
-                        questionSensor.AppendObservation(observation);
+                        Monitor.Log("Data: ", string.Join(" ", observation), symbol.transform);
+                        Monitor.Log("Type: ", "Symbol", symbol.transform);
+                    }
+                }   
+                else if (sensedCollider.transform.parent.TryGetComponent(out PressurePad pressurePad))
+                {
+                    Vector3 relativeNormalizedObjectPosition = transform.InverseTransformPoint(pressurePad.transform.position) / hallwaySettings.agentSensorRadius;
+                    float[] observation = 
+                    { 
+                        0, 
+                        pressurePad.AssociatedSymbol.IsSymbolX ? 1 : -1, 
+                        relativeNormalizedObjectPosition.x, 
+                        relativeNormalizedObjectPosition.z
+                    };
+                    
+                    objectObservations.Add(observation);
+                    
+                    if (drawBufferSensorMonitor)
+                    {
+                        Monitor.Log("Data: ", string.Join(" ", observation), pressurePad.transform);
+                        Monitor.Log("Type: ", "Pressure pad", pressurePad.transform);
                     }
                 }
+            }
+            BroadcastObservationsCollected();
+            return new HallwayAgentObservation(vectorObservations, objectObservations);
+        }
+        
+        public override void CollectObservations(VectorSensor sensor)
+        {
+            HallwayAgentObservation hallwayAgentObservation = isHuman ? episodeTrajectory[0].hallwayAgentObservation : GetAgentEnvironmentObservation();
+            
+            foreach (float observation in hallwayAgentObservation.vectorObservations)
+            {
+                sensor.AddObservation(observation);
+            }
+
+            foreach (float[] objectObservation in hallwayAgentObservation.objectObservations)     
+            {
+                questionSensor.AppendObservation(objectObservation);
             }
         }
 
@@ -173,25 +263,20 @@ namespace ML_Agents.Examples.Hallway.Scripts
             if (isHuman)
             {
                 ActionSegment<int> discreteActionsOut = actionsOut.DiscreteActions;
-            
-                if (Input.GetKey(KeyCode.W))
-                {
-                    discreteActionsOut[0] = 1;
-                }
-                else if (Input.GetKey(KeyCode.D))
-                {
-                    discreteActionsOut[0] = 2;
-                }
-                else if (Input.GetKey(KeyCode.A))
-                {
-                    discreteActionsOut[0] = 3;
-                }
+                ActionSegment<float> continuousActionsOut = actionsOut.ContinuousActions;
+
+                discreteActionsOut[0] = episodeTrajectory[0].hallwayAgentAction.discreteAction;
+                continuousActionsOut[0] = episodeTrajectory[0].hallwayAgentAction.delay < minMeanMaxActionDelay.y ?
+                        Mathf.InverseLerp(minMeanMaxActionDelay.x, minMeanMaxActionDelay.y, episodeTrajectory[0].hallwayAgentAction.delay) - 1 :
+                        Mathf.InverseLerp(minMeanMaxActionDelay.y, minMeanMaxActionDelay.z, episodeTrajectory[0].hallwayAgentAction.delay);
+                
+                SetReward(episodeTrajectory[0].reward);
             }
         }
     
         public override void OnActionReceived(ActionBuffers actionBuffers)
         {
-            AddReward(Time.fixedDeltaTime / maxEpisodeLengthInSeconds);
+            base.OnActionReceived(actionBuffers);
             timeSinceLastDecision = 0;
 
             if (!isHuman)
@@ -200,7 +285,7 @@ namespace ML_Agents.Examples.Hallway.Scripts
                     Mathf.Lerp(minMeanMaxActionDelay.x, minMeanMaxActionDelay.y, actionBuffers.ContinuousActions[0] + 1) : 
                     Mathf.Lerp(minMeanMaxActionDelay.y, minMeanMaxActionDelay.z, actionBuffers.ContinuousActions[0]);
                 
-                CompletedAgentAction = new HallwayAgentAction(actionBuffers.DiscreteActions[0], desiredDelay);
+                decidedAgentAction = new HallwayAgentAction(actionBuffers.DiscreteActions[0], desiredDelay);
             }
         }
 
@@ -210,9 +295,8 @@ namespace ML_Agents.Examples.Hallway.Scripts
             Vector3 dirToGo = Vector3.zero;
             
             int action = hallwayAgentAction.discreteAction;
-            AddReward(action == 1 ? 0 : -0.25f * Time.fixedDeltaTime / maxEpisodeLengthInSeconds);
-            
-            
+            AddReward(-0.01f);
+
             switch (action)
             {
                 case 1:
@@ -229,7 +313,20 @@ namespace ML_Agents.Examples.Hallway.Scripts
             transform.Rotate(rotateDir, Time.fixedDeltaTime * hallwaySettings.agentRotationSpeed);
             agentRigidbody.AddForce(dirToGo * hallwaySettings.agentRunSpeed, ForceMode.VelocityChange);
         }
-        
+
+        public void DumpTrajectoryIntoHeuristicAndEndEpisode()
+        {
+            int count = episodeTrajectory.Count - 1;
+            for (int index = 0; index < count; index++)
+            {
+                RequestDecision();
+                Academy.Instance.EnvironmentStep();
+                episodeTrajectory.RemoveAt(0);
+            }
+            
+            EndEpisode();
+        }
+
         private void OnCollisionEnter(Collision collision)
         {
             if (collision.collider.CompareTag("wall"))
@@ -253,16 +350,23 @@ namespace ML_Agents.Examples.Hallway.Scripts
                 if ((!rightAnswerIsX && !pressurePad.AssociatedSymbol.IsSymbolX) ||
                     (rightAnswerIsX && pressurePad.AssociatedSymbol.IsSymbolX))
                 {
-                    AddReward(2f);
+                    //AddReward(2f);
                     StartCoroutine(SwapMaterialForRenderer(groundRenderer, 0.5f, hallwaySettings.goalScoredMaterial));
                 }
                 else
                 {
-                    AddReward(-0.1f);
+                    //AddReward(-0.1f);
                     StartCoroutine(SwapMaterialForRenderer(groundRenderer, 0.5f, hallwaySettings.failMaterial));
                 }
 
-                EndEpisode();
+                if (isHuman)
+                {
+                    DumpTrajectoryIntoHeuristicAndEndEpisode();
+                }
+                else
+                {
+                    EndEpisode();
+                }
             }
         }
 

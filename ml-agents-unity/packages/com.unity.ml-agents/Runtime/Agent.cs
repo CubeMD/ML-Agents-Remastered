@@ -272,6 +272,8 @@ namespace Unity.MLAgents
         /// Additionally, the magnitude of the reward should not exceed 1.0
         float m_Reward;
 
+        public float Reward => m_Reward;
+
         /// Represents the group reward the agent accumulated during the current step.
         float m_GroupReward;
 
